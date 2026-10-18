@@ -10,7 +10,7 @@ bool isTouched();
 
 void setLinkState(ancs::LinkState state);
 void showPassKey(uint32_t key);
-void addNotification(const Notification& n);
+bool addNotification(const Notification& n);  // true nếu là tin mới, false nếu chỉ cập nhật tin cũ
 void removeNotification(uint32_t uid);
 
 // Gọi liên tục trong loop(): cảm ứng, đèn nền, đồng hồ, hiệu ứng nháy.

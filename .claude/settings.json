@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -o -E \".{0,400}\\(IO42|GPIO42|GPIO 42\\).{0,600}\" 91a7ada6-9d0e-4389-9ce3-f81ddc01d300.jsonl)",
+      "Bash(grep -o -E \"https?://[^\\\\\"' \\)\\\\\\\\]*\\(lcdwiki|LCDWIKI|es3c28p|ES3C28P|ES3N28P\\)[^\\\\\"' \\)\\\\\\\\]*\" 91a7ada6-9d0e-4389-9ce3-f81ddc01d300.jsonl)",
+      "Bash(curl -sL --max-time 20 \"https://raw.githubusercontent.com/ngttai/esp32_s3_es3c28p/HEAD/include/bsp/esp32_s3_es3c28p.h\")",
+      "Bash(curl -sL --max-time 20 \"https://raw.githubusercontent.com/ngttai/esp32_s3_es3c28p/HEAD/src/esp32_s3_es3c28p.c\")",
+      "Read(//c/Users/lybao/AppData/Local/Temp/claude/c--Users-lybao-Documents-projects-Noti/91a7ada6-9d0e-4389-9ce3-f81ddc01d300/scratchpad/**)",
+      "Bash(mkdir -p tts)",
+      "Bash(curl -s --max-time 20 -A \"Mozilla/5.0\" -o tts/test.mp3 -w \"http=%{http_code} type=%{content_type} size=%{size_download}\\\\n\" \"https://translate.google.com/translate_tts?ie=UTF-8&tl=vi&client=tw-ob&q=Zalo.%20Ng%E1%BB%8Dc%20H%C3%A0%3A%20t%E1%BB%91i%20nay%20%C4%91i%20%C4%83n%20kh%C3%B4ng\")"
+    ]
+  }
+}

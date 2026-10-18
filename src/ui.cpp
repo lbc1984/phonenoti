@@ -16,6 +16,7 @@
 #include "fonts/font_small.h"
 #include "fonts/font_title.h"
 #include "led.h"
+#include "speech.h"
 #include "touch.h"
 #include "vlw_font.h"
 
@@ -34,6 +35,8 @@ constexpr int PAD = 12;
 constexpr int CHIP_Y = 36, CHIP_H = 22;  // nhãn tên app
 constexpr int BODY_LINE_H = 23;
 constexpr int TEXT_BOTTOM = BAR_Y - 9;  // baseline thấp nhất của nội dung
+constexpr int SOUND_BTN_W = 30;         // vùng chạm nút loa trên thanh trạng thái
+constexpr uint32_t SOUND_PANEL_MS = 5000;  // bảng âm lượng tự ẩn sau ngần này không chạm
 
 // ---- Màu (RGB565), tông tối ----
 constexpr uint16_t C_BG = 0x0862;     // #0B0F14
@@ -64,7 +67,19 @@ constexpr uint32_t FLASH_STEP_MS = 200;
 
 constexpr int HISTORY_MAX = 20;
 
-enum ButtonId : uint8_t { BTN_NONE, BTN_OLDER, BTN_NEWER, BTN_DISMISS, BTN_ANSWER, BTN_DECLINE };
+enum ButtonId : uint8_t {
+    BTN_NONE,
+    BTN_OLDER,
+    BTN_NEWER,
+    BTN_DISMISS,
+    BTN_ANSWER,
+    BTN_DECLINE,
+    BTN_SOUND,       // loa trên thanh trạng thái: chạm mở bảng âm lượng, giữ để cài WiFi
+    BTN_VOL_DOWN,    // bảng âm lượng: −
+    BTN_VOL_UP,      // bảng âm lượng: +
+    BTN_WIFI,        // bảng âm lượng: mở màn cài WiFi
+    BTN_WIFI_LATER,  // "Later" ở màn cài WiFi
+};
 
 struct Button {
     int16_t x, y, w, h;
@@ -115,6 +130,10 @@ uint32_t gTouchPollAt = 0;
 
 bool gBootDown = false, gBootLong = false;
 uint32_t gBootAt = 0;
+
+uint8_t gSpeechDrawn = 0;  // trạng thái loa/WiFi lúc vẽ thanh trên lần gần nhất
+bool gSoundPanel = false;  // đang mở bảng âm lượng ở thanh dưới đáy
+uint32_t gSoundPanelAt = 0;
 
 // ---------- Tiện ích ----------
 
@@ -294,10 +313,12 @@ void sanitize(char* s, size_t cap) {
     strlcpy(s, out.c_str(), cap);
 }
 
-// "20261018T104100" -> "10:41", hoặc "17/10 10:41" nếu không phải hôm nay.
+// "20261018T104100" -> "10:41", hoặc "18 Oct 10:41" nếu không phải hôm nay.
 std::string formatDate(const char* d) {
     if (strlen(d) < 13) return "";
-    char buf[16];
+    static const char* const months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                         "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    char buf[20];
     struct tm now;
     bool sameDay = clockValid(now);
     if (sameDay) {
@@ -308,12 +329,65 @@ std::string formatDate(const char* d) {
     if (sameDay || !clockValid(now)) {
         snprintf(buf, sizeof buf, "%.2s:%.2s", d + 9, d + 11);
     } else {
-        snprintf(buf, sizeof buf, "%.2s/%.2s %.2s:%.2s", d + 6, d + 4, d + 9, d + 11);
+        const int month = (d[4] - '0') * 10 + (d[5] - '0');
+        const int day = (d[6] - '0') * 10 + (d[7] - '0');
+        snprintf(buf, sizeof buf, "%d %s %.2s:%.2s", day, months[constrain(month, 1, 12) - 1], d + 9, d + 11);
     }
     return buf;
 }
 
+// Trạng thái loa/WiFi gói trong một byte để biết khi nào phải vẽ lại thanh trên
+uint8_t speechState() {
+    return (uint8_t)speech::net() | (uint8_t)speech::speaking() << 2 | (uint8_t)speech::available() << 3 |
+           speech::volume() << 4;
+}
+
 // ---------- Vẽ ----------
+
+void addButton(int x, int y, int w, int h, ButtonId id) {
+    const Button b = {(int16_t)x, (int16_t)y, (int16_t)w, (int16_t)h, id};
+    for (Button& old : gButtons) {  // thanh trên được vẽ lại mỗi phút mà không xoá danh sách nút
+        if (old.id == id) {
+            old = b;
+            return;
+        }
+    }
+    gButtons.push_back(b);
+}
+
+// Loa: số vòng sóng theo âm lượng, xanh dương = đang đọc, xám có dấu x đỏ = tắt tiếng
+void drawSpeakerIcon(int cx, int cy, uint16_t bg) {
+    TFT_eSPI& g = gfx();
+    const uint8_t vol = speech::volume();
+    const uint16_t c = vol == 0 ? C_MUTED : speech::speaking() ? C_BLUE : C_TEXT;
+    const int x = cx - 11;  // mép trái thân loa
+    g.fillRect(x, cy - 3, 4, 7, c);
+    g.fillTriangle(x + 3, cy - 3, x + 8, cy - 7, x + 8, cy + 7, c);
+    g.fillTriangle(x + 3, cy - 3, x + 8, cy + 7, x + 3, cy + 3, c);
+    if (vol == 0) {
+        g.drawWideLine(x + 12, cy - 3, x + 18, cy + 3, 2, C_RED, bg);
+        g.drawWideLine(x + 12, cy + 3, x + 18, cy - 3, 2, C_RED, bg);
+        return;
+    }
+    // Vòng sóng âm bên phải (góc 0 ở 6 giờ, quay theo chiều kim đồng hồ)
+    const int waves = vol >= 8 ? 3 : vol >= 4 ? 2 : 1;
+    for (int i = 0; i < waves; i++) g.drawSmoothArc(x + 8, cy, 6 + 4 * i, 4 + 4 * i, 225, 315, c, bg, true);
+}
+
+// WiFi: xanh lá = có mạng, vàng = đang nối, xanh dương = đang mở trang cài đặt, xám = chưa cài
+void drawWifiIcon(int cx, int bottom) {
+    TFT_eSPI& g = gfx();
+    uint16_t c;
+    switch (speech::net()) {
+        case speech::Net::Online: c = C_GREEN; break;
+        case speech::Net::Connecting: c = C_YELLOW; break;
+        case speech::Net::Setup: c = C_BLUE; break;
+        default: c = C_MUTED; break;
+    }
+    g.fillSmoothCircle(cx, bottom - 1, 2, c, C_HDR);
+    g.drawSmoothArc(cx, bottom, 7, 5, 135, 225, c, C_HDR, true);
+    g.drawSmoothArc(cx, bottom, 12, 10, 135, 225, c, C_HDR, true);
+}
 
 void drawHeader() {
     TFT_eSPI& g = gfx();
@@ -323,14 +397,13 @@ void drawHeader() {
     uint16_t dot;
     const char* label;
     switch (gShowPassKey ? ancs::LinkState::Pairing : gState) {
-        case ancs::LinkState::Ready: dot = C_GREEN; label = "Đã kết nối"; break;
-        case ancs::LinkState::Connected: dot = C_YELLOW; label = "Đang kết nối…"; break;
-        case ancs::LinkState::Pairing: dot = C_YELLOW; label = "Đang ghép đôi"; break;
-        default: dot = C_MUTED; label = "Đang chờ iPhone…"; break;
+        case ancs::LinkState::Ready: dot = C_GREEN; label = "Connected"; break;
+        case ancs::LinkState::Connected: dot = C_YELLOW; label = "Connecting…"; break;
+        case ancs::LinkState::Pairing: dot = C_YELLOW; label = "Pairing"; break;
+        default: dot = C_MUTED; label = "Waiting for iPhone…"; break;
     }
     const int base = midBaseline(fSmall, 0, HDR_H);
     g.fillSmoothCircle(14, HDR_H / 2, 4, dot, C_HDR);
-    drawText(fSmall, 24, base, label, C_TEXT, C_HDR);
 
     int right = W - PAD;
     struct tm now;
@@ -348,11 +421,24 @@ void drawHeader() {
         const int pw = textWidth(fSmall, pos) + 14;
         g.fillSmoothRoundRect(right - pw, 4, pw, 18, 9, C_SEP, C_HDR);
         drawText(fSmall, right - pw + 7, base, pos, C_DIM, C_SEP);
+        right -= pw + 6;
     }
-}
-
-void addButton(int x, int y, int w, int h, ButtonId id) {
-    gButtons.push_back({(int16_t)x, (int16_t)y, (int16_t)w, (int16_t)h, id});
+    gSpeechDrawn = speechState();
+    if (speech::available()) {
+        right -= SOUND_BTN_W;
+        uint16_t bg = C_HDR;
+        if (gPressed == BTN_SOUND) {  // đang giữ nút loa
+            bg = C_SEP;
+            g.fillSmoothRoundRect(right + 1, 2, SOUND_BTN_W - 2, HDR_H - 4, 6, bg, C_HDR);
+        }
+        drawSpeakerIcon(right + SOUND_BTN_W / 2, HDR_H / 2, bg);
+        // Thanh trên chỉ cao 26 px, ngón tay hay chạm lệch xuống dưới: nhận chạm tới y ~ 50
+        addButton(right, 0, SOUND_BTN_W, HDR_H + 18, BTN_SOUND);
+        drawWifiIcon(right - 12, HDR_H / 2 + 7);
+        right -= 24;
+    }
+    // Chữ trạng thái vẽ sau cùng, rút gọn "…" nếu không đủ chỗ trước các biểu tượng bên phải
+    drawText(fSmall, 24, base, ellipsize(fSmall, label, right - 6 - 24), C_TEXT, C_HDR);
 }
 
 // Nút chữ bo tròn trên thanh dưới đáy; đang nhấn thì dùng màu pressed.
@@ -387,23 +473,56 @@ void drawActionBar(const Notification& n) {
     drawBarBackground();
     if (isCall(n)) {
         const int bw = (W - 2 * PAD - 12) / 2;
-        drawButton(PAD, bw, BTN_DECLINE, "Từ chối", C_RED, g.alphaBlend(150, C_RED, C_BG), C_TEXT);
-        drawButton(W - PAD - bw, bw, BTN_ANSWER, "Nghe", C_GREEN, g.alphaBlend(150, C_GREEN, C_BG), C_TEXT);
+        drawButton(PAD, bw, BTN_DECLINE, "Decline", C_RED, g.alphaBlend(150, C_RED, C_BG), C_TEXT);
+        drawButton(W - PAD - bw, bw, BTN_ANSWER, "Answer", C_GREEN, g.alphaBlend(150, C_GREEN, C_BG), C_TEXT);
         return;
     }
     const int aw = 60, gap = 12;
     drawArrowButton(PAD, aw, BTN_OLDER, true, gView < gCount - 1);
-    drawButton(PAD + aw + gap, W - 2 * (PAD + aw + gap), BTN_DISMISS, "Xoá", g.alphaBlend(70, C_RED, C_HDR),
+    drawButton(PAD + aw + gap, W - 2 * (PAD + aw + gap), BTN_DISMISS, "Dismiss", g.alphaBlend(70, C_RED, C_HDR),
                g.alphaBlend(150, C_RED, C_HDR), C_TEXT);
     drawArrowButton(W - PAD - aw, aw, BTN_NEWER, false, gView > 0);
+}
+
+// Nút − / + của bảng âm lượng; tới giới hạn thì vẽ mờ
+void drawVolumeButton(int x, int w, ButtonId id, bool plus, bool enabled) {
+    TFT_eSPI& g = gfx();
+    g.fillSmoothRoundRect(x, BTN_Y, w, BTN_H, 10, gPressed == id ? C_MUTED : C_SEP, C_HDR);
+    const int cx = x + w / 2, cy = BTN_Y + BTN_H / 2;
+    const uint16_t ic = enabled ? C_TEXT : C_MUTED;
+    g.fillRect(cx - 7, cy - 1, 15, 3, ic);
+    if (plus) g.fillRect(cx - 1, cy - 7, 3, 15, ic);
+    addButton(x, BTN_Y, w, BTN_H, id);
+}
+
+// Bảng âm lượng vẽ đè lên thanh dưới đáy: [−] vạch âm lượng [+] [WiFi]
+void drawSoundPanel() {
+    TFT_eSPI& g = gfx();
+    gButtons.erase(std::remove_if(gButtons.begin(), gButtons.end(), [](const Button& b) { return b.y >= BAR_Y; }),
+                   gButtons.end());  // nút của thanh dưới đáy đang bị che
+    drawBarBackground();
+    const int vol = speech::volume();
+    const int bw = 52, wifiW = 64;
+    const int plusX = W - PAD - wifiW - 10 - bw;
+    drawVolumeButton(PAD, bw, BTN_VOL_DOWN, false, vol > 0);
+    drawVolumeButton(plusX, bw, BTN_VOL_UP, true, vol < speech::MAX_VOLUME);
+    drawButton(W - PAD - wifiW, wifiW, BTN_WIFI, "WiFi", C_SEP, C_MUTED, C_TEXT);
+    // Vạch cao dần giữa hai nút, sáng tới mức hiện tại
+    const int x0 = PAD + bw + 8;
+    const int step = (plusX - 8 - x0 + 3) / speech::MAX_VOLUME;
+    const int bottom = BTN_Y + BTN_H - 4;
+    for (int i = 0; i < speech::MAX_VOLUME; i++) {
+        const int h = 6 + 2 * i;
+        g.fillSmoothRoundRect(x0 + i * step, bottom - h, step - 3, h, 2, i < vol ? C_BLUE : C_SEP, C_HDR);
+    }
 }
 
 // Board không có cảm ứng: chỉ hiện gợi ý dùng nút BOOT
 void drawHintBar() {
     drawBarBackground();
     const int base = midBaseline(fSmall, BAR_Y, H - BAR_Y);
-    if (gCount > 1) drawText(fSmall, PAD, base, "BOOT: tin cũ hơn", C_DIM, C_HDR);
-    drawTextRight(fSmall, W - PAD, base, "Giữ BOOT: xoá hết", C_MUTED, C_HDR);
+    if (gCount > 1) drawText(fSmall, PAD, base, "BOOT: older", C_DIM, C_HDR);
+    drawTextRight(fSmall, W - PAD, base, "Hold BOOT: clear all", C_MUTED, C_HDR);
 }
 
 void drawNotification(const Notification& n) {
@@ -466,21 +585,21 @@ void drawWaitingScreen() {
     switch (gState) {
         case ancs::LinkState::Ready:
             drawBluetoothIcon(W / 2, 84, C_GREEN);
-            drawTextCenter(fTitle, 146, "Đã sẵn sàng", C_TEXT, C_BG);
-            drawTextCenter(fBody, 174, "Thông báo mới từ iPhone", C_DIM, C_BG);
-            drawTextCenter(fBody, 197, "sẽ hiện ở đây", C_DIM, C_BG);
+            drawTextCenter(fTitle, 146, "Ready", C_TEXT, C_BG);
+            drawTextCenter(fBody, 174, "New iPhone notifications", C_DIM, C_BG);
+            drawTextCenter(fBody, 197, "will show up here", C_DIM, C_BG);
             break;
         case ancs::LinkState::Connected:
             drawBluetoothIcon(W / 2, 84, C_BLUE);
-            drawTextCenter(fTitle, 146, "Đang kết nối…", C_TEXT, C_BG);
-            drawTextCenter(fBody, 174, "Nếu iPhone hỏi, hãy cho phép", C_DIM, C_BG);
-            drawTextCenter(fBody, 197, "“Chia sẻ thông báo hệ thống”", C_DIM, C_BG);
+            drawTextCenter(fTitle, 146, "Connecting…", C_TEXT, C_BG);
+            drawTextCenter(fBody, 174, "If your iPhone asks, turn on", C_DIM, C_BG);
+            drawTextCenter(fBody, 197, "“Share System Notifications”", C_DIM, C_BG);
             break;
         default:
             drawBluetoothIcon(W / 2, 84, C_BLUE);
-            drawTextCenter(fTitle, 146, "Kết nối iPhone", C_TEXT, C_BG);
-            drawTextCenter(fBody, 174, "Mở Cài đặt › Bluetooth trên iPhone", C_DIM, C_BG);
-            drawTextCenter(fBody, 197, std::string("rồi chọn “") + gDeviceName + "”", C_DIM, C_BG);
+            drawTextCenter(fTitle, 146, "Connect your iPhone", C_TEXT, C_BG);
+            drawTextCenter(fBody, 174, "Open Settings › Bluetooth", C_DIM, C_BG);
+            drawTextCenter(fBody, 197, std::string("and tap “") + gDeviceName + "”", C_DIM, C_BG);
             break;
     }
 }
@@ -488,7 +607,7 @@ void drawWaitingScreen() {
 void drawPassKeyScreen() {
     TFT_eSPI& g = gfx();
     g.fillRect(0, HDR_H + 1, W, H - HDR_H - 1, C_BG);
-    drawTextCenter(fBody, 66, "Nhập mã này trên iPhone", C_TEXT, C_BG);
+    drawTextCenter(fBody, 66, "Enter this code on your iPhone", C_TEXT, C_BG);
 
     const int boxX = 40, boxY = 84, boxW = 240, boxH = 72;
     g.fillSmoothRoundRect(boxX, boxY, boxW, boxH, 14, C_SEP, C_BG);
@@ -504,7 +623,28 @@ void drawPassKeyScreen() {
     const int base = midBaseline(fDigits, boxY, boxH);
     for (const char* p = digits; *p; p++) x = drawText(fDigits, x, base, std::string(1, *p), C_YELLOW, C_HDR) + gap;
 
-    drawTextCenter(fSmall, 190, "Mã chỉ dùng cho lần ghép đôi này", C_MUTED, C_BG);
+    drawTextCenter(fSmall, 190, "This code only works for this pairing", C_MUTED, C_BG);
+}
+
+// Board đang phát mạng "ESP32 Noti Setup": hướng dẫn cài WiFi bằng iPhone
+void drawWifiSetupScreen() {
+    gfx().fillRect(0, HDR_H + 1, W, H - HDR_H - 1, C_BG);
+    drawText(fTitle, PAD, 58, "Set up WiFi to read aloud", C_TEXT, C_BG);
+    static const char* const steps[] = {
+        "1. On iPhone: Settings › Wi-Fi",
+        "2. Join “ESP32 Noti Setup”",
+        "3. Tap Configure WiFi, pick your network, enter the password and tap Save",
+    };
+    int y = 88;
+    for (const char* step : steps) {
+        for (const std::string& line : wrapText(fBody, step, W - 2 * PAD, 3)) {
+            drawText(fBody, PAD, y, line, C_BODY, C_BG);
+            y += BODY_LINE_H;
+        }
+    }
+    drawBarBackground();
+    const int bw = 140;
+    drawButton((W - bw) / 2, bw, BTN_WIFI_LATER, "Later", C_SEP, C_MUTED, C_TEXT);
 }
 
 void render() {
@@ -512,6 +652,8 @@ void render() {
     drawHeader();
     if (gShowPassKey) {
         drawPassKeyScreen();
+    } else if (speech::net() == speech::Net::Setup) {
+        drawWifiSetupScreen();
     } else if (gCount == 0) {
         drawWaitingScreen();
     } else {
@@ -519,6 +661,7 @@ void render() {
         if (gHasTouch) drawActionBar(gHistory[gView]);
         else drawHintBar();
     }
+    if (gSoundPanel) drawSoundPanel();
     present();
 }
 
@@ -561,6 +704,26 @@ void clearAll() {
 }
 
 void onButton(ButtonId id) {
+    switch (id) {
+        case BTN_SOUND:
+            gSoundPanel = !gSoundPanel;
+            return;
+        case BTN_VOL_DOWN:
+        case BTN_VOL_UP: {
+            const int v = speech::volume() + (id == BTN_VOL_UP ? 1 : -1);
+            if (v >= 0 && v <= speech::MAX_VOLUME) speech::setVolume(v);
+            return;
+        }
+        case BTN_WIFI:
+            gSoundPanel = false;
+            speech::openWifiSetup();
+            return;
+        case BTN_WIFI_LATER:
+            speech::closeWifiSetup();
+            return;
+        default:
+            break;
+    }
     if (gCount == 0) return;
     const uint32_t uid = gHistory[gView].uid;
     const bool canClear = gHistory[gView].flags & NOTIF_FLAG_NEGATIVE_ACTION;
@@ -600,6 +763,7 @@ void touchDown(int x, int y, uint32_t now) {
     gTouch.startY = gTouch.y = gTouch.scrollAnchorY = y;
     Serial.printf("[Touch] chạm (%d, %d)\n", x, y);
     led::setUnread(false);  // đã chạm màn = đã thấy tin
+    gSoundPanelAt = now;    // còn chạm thì bảng âm lượng chưa tự ẩn
     if (gDimmed) {  // chạm khi màn đang tối chỉ để bật sáng
         gTouch.ignore = true;
         wake();
@@ -635,18 +799,21 @@ void touchMove(int x, int y, uint32_t now) {
             }
         }
     }
-    // Giữ nút Xoá: xoá hết danh sách trên màn hình (thông báo trên iPhone giữ nguyên)
-    if (!gTouch.moved && gPressed == BTN_DISMISS && now - gTouch.downAt > LONG_PRESS_MS) {
+    // Giữ nút Xoá: xoá hết danh sách trên màn hình (thông báo trên iPhone giữ nguyên).
+    // Giữ nút loa: mở trang cài WiFi.
+    if (!gTouch.moved && (gPressed == BTN_DISMISS || gPressed == BTN_SOUND) &&
+        now - gTouch.downAt > LONG_PRESS_MS) {
         gTouch.longFired = true;
+        const ButtonId held = gPressed;
         gPressed = BTN_NONE;
-        clearAll();
+        if (held == BTN_DISMISS) clearAll();
+        else speech::openWifiSetup();
         render();
     }
 }
 
 void touchUp() {
-    gTouch.down = false;
-    if (gTouch.ignore || gTouch.longFired) return;
+    gTouch.down = false;    if (gTouch.ignore || gTouch.longFired) return;
     const ButtonId pressed = gPressed;
     gPressed = BTN_NONE;
     if (pressed != BTN_NONE) {
@@ -768,20 +935,20 @@ void showPassKey(uint32_t key) {
     render();
 }
 
-void addNotification(const Notification& in) {
+bool addNotification(const Notification& in) {
     Notification n = in;
     const bool hadMessage = n.message[0] != '\0';
     sanitize(n.title, sizeof n.title);
     sanitize(n.subtitle, sizeof n.subtitle);
     sanitize(n.message, sizeof n.message);
-    if (hadMessage && !n.message[0]) strlcpy(n.message, "(biểu tượng cảm xúc)", sizeof n.message);
+    if (hadMessage && !n.message[0]) strlcpy(n.message, "(emoji)", sizeof n.message);
 
     for (int i = 0; i < gCount; i++) {
         if (gHistory[i].uid == n.uid) {  // thông báo được cập nhật nội dung
             gHistory[i] = n;
             updateLed();
             if (i == gView) render();
-            return;
+            return false;
         }
     }
     int keep = gCount < HISTORY_MAX ? gCount : HISTORY_MAX - 1;
@@ -796,6 +963,7 @@ void addNotification(const Notification& in) {
     wake();
     render();
     startFlash();
+    return true;
 }
 
 void removeNotification(uint32_t uid) {
@@ -808,8 +976,8 @@ void removeNotification(uint32_t uid) {
 }
 
 void loop() {
-    uint32_t now = millis();
     pollInput();
+    const uint32_t now = millis();  // lấy sau pollInput: wake() có thể vừa cập nhật gLastActivity
 
     if (gFlashLeft > 0 && (int32_t)(now - gFlashNext) >= 0) {
         if (gCount > 0) {
@@ -834,6 +1002,13 @@ void loop() {
         led::setDim(true);
     }
     led::loop();
+
+    // Task đọc thông báo đổi trạng thái loa/WiFi (vd. vừa nối mạng, đang đọc) -> vẽ lại
+    if (speechState() != gSpeechDrawn) render();
+    if (gSoundPanel && !gTouch.down && now - gSoundPanelAt > SOUND_PANEL_MS) {
+        gSoundPanel = false;
+        render();
+    }
 
     struct tm t;
     if (clockValid(t) && t.tm_min != gLastMinute) {

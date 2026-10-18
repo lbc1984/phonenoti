@@ -26,12 +26,15 @@ RESET chung với chip. Mạch khác thì sửa các dòng `-DTFT_...` trong `[e
 
 ## Ghép đôi với iPhone (chỉ làm 1 lần)
 
-1. Màn hình hiện "Đang chờ iPhone...".
+Giao diện trên màn hình bằng tiếng Anh; tài liệu này ghi kèm chữ hiện trên màn hình để dễ tìm.
+
+1. Màn hình hiện "Waiting for iPhone…" và "Connect your iPhone".
 2. Trên iPhone: **Cài đặt → Bluetooth**, trong mục *Thiết bị khác* chọn **ESP32 Noti**.
 3. Màn hình ESP32 hiện **mã 6 số** → nhập mã đó trên iPhone.
 4. iPhone hỏi có cho phép nhận thông báo không → bấm **Cho phép**.
-   (Kiểm tra lại: Cài đặt → Bluetooth → (i) cạnh ESP32 Noti → bật **Chia sẻ thông báo hệ thống**.)
-5. Trạng thái chuyển thành "Đã kết nối" là xong. Lần sau cắm điện, iPhone tự kết nối lại.
+   (Kiểm tra lại: Cài đặt → Bluetooth → (i) cạnh ESP32 Noti → bật **Chia sẻ thông báo hệ thống** /
+   *Share System Notifications*.)
+5. Trạng thái chuyển thành "Connected" là xong. Lần sau cắm điện, iPhone tự kết nối lại.
 
 ## Sử dụng
 
@@ -42,9 +45,9 @@ Cảm ứng:
 | Vuốt sang trái / nút `‹` | Xem thông báo cũ hơn |
 | Vuốt sang phải / nút `›` | Xem thông báo mới hơn |
 | Kéo lên / xuống trên nội dung | Cuộn tin dài (có thanh cuộn ở cạnh phải) |
-| Nút **Xoá** | Xoá thông báo này, **xoá luôn trên iPhone** |
-| Giữ nút **Xoá** 1,2 giây | Xoá hết danh sách trên màn hình (trên iPhone giữ nguyên) |
-| Cuộc gọi đến: **Nghe** / **Từ chối** | Nghe máy hoặc từ chối cuộc gọi trên iPhone |
+| Nút **Dismiss** | Xoá thông báo này, **xoá luôn trên iPhone** |
+| Giữ nút **Dismiss** 1,2 giây | Xoá hết danh sách trên màn hình (trên iPhone giữ nguyên) |
+| Cuộc gọi đến: **Answer** / **Decline** | Nghe máy hoặc từ chối cuộc gọi trên iPhone |
 | Chạm khi màn đang tối | Chỉ bật sáng lại |
 | Giữ tay trên màn lúc cắm điện | Xoá các iPhone đã ghép đôi |
 
@@ -61,6 +64,38 @@ Nút **BOOT**: bấm để xem tin cũ hơn (hết thì quay lại tin mới nh�
 | Chớp nhẹ mỗi 4 giây | Còn tin chưa xem — chạm màn hoặc bấm BOOT là tắt |
 | Đỏ ↔ xanh lá nháy nhanh | Cuộc gọi đến |
 | Tắt | Đã kết nối, không có gì mới |
+
+### Đọc to thông báo (bản `s3`)
+
+Có tin mới thì board kêu "ting" rồi đọc bằng giọng Google Dịch, ví dụ *"Zalo. Ngọc Hà: tối nay đi ăn
+không"*. Nội dung thông báo đọc bằng **giọng tiếng Việt**; câu do board tự nói thì bằng **giọng tiếng Anh**: cuộc gọi
+đọc *"Incoming call from"* / *"Missed call from"* rồi tới tên người gọi (giọng Việt). Tin dài chỉ đọc khoảng 300 ký tự
+đầu, đường link được đọc thành "link".
+
+- Cần **cắm loa** (4–8 Ω) vào cổng loa trên board và **có WiFi** để lấy giọng đọc. Không có mạng thì chỉ kêu "ting".
+- **Cài WiFi**: khi chưa có WiFi, màn hình hiện *"Set up WiFi to read aloud"*. Trên iPhone vào **Cài đặt › Wi-Fi**,
+  chọn mạng **ESP32 Noti Setup**, trang cài đặt sẽ tự mở. Bấm *Configure WiFi*, chọn WiFi nhà bạn, nhập mật khẩu rồi
+  bấm *Save*. Board nói *"WiFi connected"* là xong. Bấm **Later** nếu chưa muốn cài (lần sau không tự hiện nữa).
+- Hai biểu tượng trên thanh trên cùng:
+
+  | Biểu tượng | Ý nghĩa |
+  |---|---|
+  | WiFi xanh lá / vàng / xanh dương / xám | Có mạng / đang nối / đang mở trang cài đặt / chưa cài |
+  | Loa có 1–3 vòng sóng / xanh dương / xám có dấu x đỏ | Âm lượng nhỏ–to / đang đọc / tắt tiếng |
+
+- **Chạm loa** mở bảng âm thanh ở thanh dưới đáy (tự ẩn sau 5 giây):
+  - **−** / **+**: chỉnh âm lượng 10 mức, mỗi lần bấm kêu "tíc" ở mức mới. Về 0 là tắt tiếng (dừng đọc ngay).
+    Mặc định to nhất; mức đã chọn được nhớ cả khi rút điện.
+  - **WiFi**: mở màn cài WiFi để đổi mạng khác (giữ biểu tượng loa 1,2 giây cũng được).
+- Thông báo bị xoá (trên iPhone, nút Dismiss, Answer/Decline cuộc gọi) trong lúc đang đọc thì board ngừng đọc.
+  Tin iOS đánh dấu im lặng thì không đọc.
+- Thử loa: mở Serial Monitor (115200), gõ một câu rồi Enter.
+
+> Nội dung thông báo được gửi tới máy chủ Google (qua HTTPS, có kiểm tra chứng chỉ của Google) để chuyển thành
+> giọng nói. Đây là dịch vụ miễn phí không chính thức nên Google có thể đổi hoặc chặn bất cứ lúc nào; khi đó board
+> chỉ kêu "ting". Không muốn gửi nội dung đi thì để âm lượng về 0 (tắt tiếng).
+
+### Ghi chú khác
 
 - Lưu 20 thông báo gần nhất. Xoá thông báo trên iPhone thì nó cũng biến mất khỏi màn hình.
 - Các thông báo đã có sẵn trên iPhone lúc kết nối không được hiện, chỉ hiện thông báo mới.
@@ -84,6 +119,9 @@ Nút **BOOT**: bấm để xem tin cũ hơn (hết thì quay lại tin mới nh�
   rồi ghép đôi lại. ESP32 tự xoá khoá cũ khi thấy iPhone không còn nhận ra nó.
 - **Kết nối rồi nhưng không có thông báo**: kiểm tra mục *Chia sẻ thông báo hệ thống* (bước 4 ở trên)
   và chắc chắn app đó được phép gửi thông báo trên iPhone.
+- **Không nghe đọc**: kiểm tra loa đã cắm, âm lượng khác 0 và biểu tượng WiFi màu xanh lá.
+  Trong Serial Monitor: `[Audio] ES8311: có` là thấy mạch âm thanh; mỗi lần đọc có dòng `[TTS] … -> HTTP 200`.
+  HTTP khác 200 nghĩa là Google từ chối hoặc mất mạng.
 - **Chạm không đúng vị trí**: mở Serial Monitor, mỗi lần chạm sẽ in `[Touch] chạm (x, y)` theo màn
   ngang 320x240 (góc trên trái là 0,0). Nếu bị ngược, sửa phép đổi toạ độ trong `touch::read()`
   ở `src/touch.cpp`.
@@ -94,6 +132,9 @@ Nút **BOOT**: bấm để xem tin cũ hơn (hết thì quay lại tin mới nh�
 - `src/ui.cpp` — vẽ giao diện vào sprite toàn màn hình (không nhấp nháy), xuống dòng, lịch sử, nút bấm, đèn nền.
 - `src/vlw_font.cpp` — vẽ chữ khử răng cưa từ font VLW; ký tự font không có (emoji) được bỏ qua.
 - `src/touch.cpp` — đọc cảm ứng FT6336 (I2C) hoặc XPT2046 (SPI), đổi toạ độ sang màn ngang.
+- `src/speech.cpp` — đọc to thông báo: WiFi (trang cài đặt WiFiManager), ghép câu, tải giọng Google, giải mã MP3.
+- `src/audio.cpp` — loa: cấu hình codec ES8311, I2S, ampli, tiếng "ting".
+- `src/led.cpp` — đèn RGB báo trạng thái.
 - `include/fonts/` — font Be Vietnam Pro đã chuyển sẵn (14/17/21px và chữ số 44px).
 - `include/app_names.h` — bảng đổi bundle ID → tên app; thêm app mới vào đây.
 
