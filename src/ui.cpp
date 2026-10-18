@@ -15,6 +15,7 @@
 #include "fonts/font_label.h"
 #include "fonts/font_small.h"
 #include "fonts/font_title.h"
+#include "led.h"
 #include "touch.h"
 #include "vlw_font.h"
 
@@ -133,6 +134,7 @@ void wake() {
     if (gDimmed) {
         gDimmed = false;
         setBacklight(BRIGHT_FULL);
+        led::setDim(false);
     }
 }
 
@@ -527,6 +529,14 @@ void startFlash() {
 
 // ---------- Thao tác trên danh sách (chỉ đổi trạng thái, người gọi tự render) ----------
 
+// Đèn nháy cuộc gọi khi còn cuộc gọi đến trong danh sách; hết tin thì thôi nhắc
+void updateLed() {
+    bool call = false;
+    for (int i = 0; i < gCount && !call; i++) call = isCall(gHistory[i]);
+    led::setCall(call);
+    if (gCount == 0) led::setUnread(false);
+}
+
 void showIndex(int i) {
     if (i < 0 || i >= gCount || i == gView) return;
     gView = i;
@@ -539,6 +549,7 @@ void removeAt(int i) {
     gCount--;
     if (i == gView) gScroll = 0;
     if (i < gView || gView >= gCount) gView = gView > 0 ? gView - 1 : 0;
+    updateLed();
 }
 
 void clearAll() {
@@ -546,6 +557,7 @@ void clearAll() {
     gView = 0;
     gScroll = 0;
     gFlashLeft = 0;
+    updateLed();
 }
 
 void onButton(ButtonId id) {
@@ -587,6 +599,7 @@ void touchDown(int x, int y, uint32_t now) {
     gTouch.startX = gTouch.x = x;
     gTouch.startY = gTouch.y = gTouch.scrollAnchorY = y;
     Serial.printf("[Touch] chạm (%d, %d)\n", x, y);
+    led::setUnread(false);  // đã chạm màn = đã thấy tin
     if (gDimmed) {  // chạm khi màn đang tối chỉ để bật sáng
         gTouch.ignore = true;
         wake();
@@ -665,6 +678,7 @@ void pollBoot(uint32_t now) {
     } else if (!down && gBootDown) {
         gBootDown = false;
         if (gBootLong || now - gBootAt < 30) return;  // giữ lâu đã xử lý, hoặc chỉ là rung tiếp điểm
+        led::setUnread(false);
         if (gDimmed) {
             wake();
             return;
@@ -726,6 +740,7 @@ void begin(const char* deviceName) {
 
     pinMode(BOOT_PIN, INPUT_PULLUP);
     gHasTouch = touch::begin();
+    led::begin();
 
     gLastActivity = millis();
     render();
@@ -739,6 +754,8 @@ bool isTouched() {
 void setLinkState(ancs::LinkState state) {
     gState = state;
     if (state != ancs::LinkState::Connected) gShowPassKey = false;
+    led::setLink(state);
+    led::setPairing(gShowPassKey);
     wake();
     render();
 }
@@ -746,6 +763,7 @@ void setLinkState(ancs::LinkState state) {
 void showPassKey(uint32_t key) {
     gPassKey = key;
     gShowPassKey = true;
+    led::setPairing(true);
     wake();
     render();
 }
@@ -761,6 +779,7 @@ void addNotification(const Notification& in) {
     for (int i = 0; i < gCount; i++) {
         if (gHistory[i].uid == n.uid) {  // thông báo được cập nhật nội dung
             gHistory[i] = n;
+            updateLed();
             if (i == gView) render();
             return;
         }
@@ -771,6 +790,9 @@ void addNotification(const Notification& in) {
     gCount = keep + 1;
     gView = 0;
     gScroll = 0;
+    led::newNotification(categoryColor(n.category));
+    led::setUnread(true);
+    updateLed();
     wake();
     render();
     startFlash();
@@ -809,7 +831,9 @@ void loop() {
     if (!gDimmed && !keepBright && now - gLastActivity > DIM_AFTER_MS) {
         gDimmed = true;
         setBacklight(BRIGHT_DIM);
+        led::setDim(true);
     }
+    led::loop();
 
     struct tm t;
     if (clockValid(t) && t.tm_min != gLastMinute) {

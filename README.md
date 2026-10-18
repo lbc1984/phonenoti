@@ -50,6 +50,18 @@ Cảm ứng:
 
 Nút **BOOT**: bấm để xem tin cũ hơn (hết thì quay lại tin mới nhất), giữ để xoá hết danh sách.
 
+Đèn RGB trên board (bản `s3`):
+
+| Đèn | Ý nghĩa |
+|---|---|
+| Xanh dương "thở" chậm | Đang chờ iPhone / mất kết nối |
+| Xanh lá sáng 1 giây | Vừa kết nối xong |
+| Vàng nhấp nháy | Đang ghép đôi (nhập mã PIN) |
+| Nháy 3 lần theo màu loại tin | Có thông báo mới (màu giống nhãn tên app) |
+| Chớp nhẹ mỗi 4 giây | Còn tin chưa xem — chạm màn hoặc bấm BOOT là tắt |
+| Đỏ ↔ xanh lá nháy nhanh | Cuộc gọi đến |
+| Tắt | Đã kết nối, không có gì mới |
+
 - Lưu 20 thông báo gần nhất. Xoá thông báo trên iPhone thì nó cũng biến mất khỏi màn hình.
 - Các thông báo đã có sẵn trên iPhone lúc kết nối không được hiện, chỉ hiện thông báo mới.
 - Sau 30 giây không có gì mới, màn hình tự giảm sáng (trừ khi đang có cuộc gọi đến).
