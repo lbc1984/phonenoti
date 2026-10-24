@@ -11,6 +11,7 @@ void begin();
 void loop();  // gọi liên tục, tự tính hiệu ứng theo thời gian
 
 void setLink(ancs::LinkState state);
+void phoneJoined();  // thêm một iPhone sẵn sàng: xanh lá 1 giây
 void setPairing(bool on);
 void setCall(bool on);                   // đang có cuộc gọi đến
 void newNotification(uint16_t color565);  // nháy 3 lần theo màu loại thông báo

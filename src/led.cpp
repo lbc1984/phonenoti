@@ -77,6 +77,11 @@ void setLink(ancs::LinkState state) {
     gLink = state;
 }
 
+void phoneJoined() {
+    gJustConnected = true;
+    gConnectedAt = millis();
+}
+
 void setPairing(bool on) { gPairing = on; }
 void setCall(bool on) { gCall = on; }
 
@@ -93,6 +98,7 @@ void setDim(bool on) { gDim = on; }
 void begin() {}
 void loop() {}
 void setLink(ancs::LinkState) {}
+void phoneJoined() {}
 void setPairing(bool) {}
 void setCall(bool) {}
 void newNotification(uint16_t) {}

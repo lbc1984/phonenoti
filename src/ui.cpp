@@ -37,6 +37,8 @@ constexpr int BODY_LINE_H = 23;
 constexpr int TEXT_BOTTOM = BAR_Y - 9;  // baseline thấp nhất của nội dung
 constexpr int SOUND_BTN_W = 30;         // vùng chạm nút loa trên thanh trạng thái
 constexpr uint32_t SOUND_PANEL_MS = 5000;  // bảng âm lượng tự ẩn sau ngần này không chạm
+// Nhãn iPhone gửi tin (từ 2 iPhone trở lên), bên phải nhãn tên app: chấm màu + tên ngắn
+constexpr int TAG_DOT_D = 8, TAG_GAP = 5, TAG_TEXT_MAX = 84;
 
 // ---- Màu (RGB565), tông tối ----
 constexpr uint16_t C_BG = 0x0862;     // #0B0F14
@@ -52,6 +54,9 @@ constexpr uint16_t C_BLUE = 0x2C7F;
 constexpr uint16_t C_RED = 0xE8E4;
 constexpr uint16_t C_ORANGE = 0xFC63;
 constexpr uint16_t C_PURPLE = 0xA2FF;
+// Màu riêng của từng iPhone, khác các màu loại thông báo (đỏ, xanh dương, vàng, cam, tím, xanh lá, xám)
+constexpr uint16_t kPhoneColor[MAX_PHONES] = {0x269D /*#22D3EE xanh ngọc*/, 0xF396 /*#F472B6 hồng*/,
+                                              0xA726 /*#A3E635 xanh nõn chuối*/};
 
 // ---- Thời gian, cử chỉ ----
 constexpr uint32_t DIM_AFTER_MS = 30000;
@@ -107,7 +112,7 @@ VlwFont fTitle(font_title);    // Bold 21px: tiêu đề
 VlwFont fDigits(font_digits);  // Bold 44px: mã PIN
 
 const char* gDeviceName = "";
-ancs::LinkState gState = ancs::LinkState::Advertising;
+ancs::LinkStatus gLink{};  // trạng thái kết nối tổng hợp của mọi iPhone
 bool gShowPassKey = false;
 uint32_t gPassKey = 0;
 
@@ -342,6 +347,48 @@ uint8_t speechState() {
            speech::volume() << 4;
 }
 
+// Tên ngắn của iPhone p, vd. "Cường"; chưa biết tên thì "iPhone 2"
+std::string phoneLabel(int p) {
+    if (p >= 0 && p < MAX_PHONES && gLink.phones[p].label[0]) return gLink.phones[p].label;
+    char buf[12];
+    snprintf(buf, sizeof buf, "iPhone %d", p >= 0 && p < MAX_PHONES ? p + 1 : 1);
+    return buf;
+}
+
+// iPhone đầu tiên đã sẵn sàng, -1 nếu không có
+int readyPhone() {
+    for (int i = 0; i < MAX_PHONES; i++) {
+        if (gLink.phones[i].ready) return i;
+    }
+    return -1;
+}
+
+// Chữ và màu chấm trạng thái trên thanh trên cùng
+const char* linkLabel(uint16_t& dot, char* buf, size_t cap) {
+    if (gShowPassKey) {
+        dot = C_YELLOW;
+        return "Pairing";
+    }
+    if (gLink.ready == 0) {
+        if (gLink.connected > 0) {
+            dot = C_YELLOW;
+            return "Connecting…";
+        }
+        dot = C_MUTED;
+        return "Waiting for iPhone…";
+    }
+    dot = C_GREEN;
+    if (gLink.ready >= 2) snprintf(buf, cap, "%u iPhones", (unsigned)gLink.ready);
+    else if (gLink.known >= 2) strlcpy(buf, phoneLabel(readyPhone()).c_str(), cap);  // 1 trong nhiều máy: tên máy đó
+    else strlcpy(buf, "Connected", cap);
+    if (gLink.connected > gLink.ready) {  // còn máy khác đang nối: "2 iPhones +1"
+        char more[8];
+        snprintf(more, sizeof more, " +%u", (unsigned)(gLink.connected - gLink.ready));
+        strlcat(buf, more, cap);
+    }
+    return buf;
+}
+
 // ---------- Vẽ ----------
 
 void addButton(int x, int y, int w, int h, ButtonId id) {
@@ -395,13 +442,8 @@ void drawHeader() {
     g.drawFastHLine(0, HDR_H, W, C_SEP);
 
     uint16_t dot;
-    const char* label;
-    switch (gShowPassKey ? ancs::LinkState::Pairing : gState) {
-        case ancs::LinkState::Ready: dot = C_GREEN; label = "Connected"; break;
-        case ancs::LinkState::Connected: dot = C_YELLOW; label = "Connecting…"; break;
-        case ancs::LinkState::Pairing: dot = C_YELLOW; label = "Pairing"; break;
-        default: dot = C_MUTED; label = "Waiting for iPhone…"; break;
-    }
+    char buf[48];
+    const char* label = linkLabel(dot, buf, sizeof buf);
     const int base = midBaseline(fSmall, 0, HDR_H);
     g.fillSmoothCircle(14, HDR_H / 2, 4, dot, C_HDR);
 
@@ -533,12 +575,30 @@ void drawNotification(const Notification& n) {
     const uint16_t accent = categoryColor(n.category);
     const uint16_t chipBg = g.alphaBlend(56, accent, C_BG);
     const std::string when = formatDate(n.date);
-    const std::string app = ellipsize(fLabel, appDisplayName(n.appId), W - 2 * PAD - textWidth(fSmall, when) - 30);
+    const int whenW = textWidth(fSmall, when);
+    // Từ 2 iPhone trở lên: chấm màu + tên ngắn của iPhone gửi tin, trước giờ (1 iPhone thì không hiện gì)
+    const bool showTag = gLink.known >= 2 && n.phone < MAX_PHONES;
+    std::string tag;
+    int tagW = 0;
+    if (showTag) {
+        tag = ellipsize(fSmall, phoneLabel(n.phone), TAG_TEXT_MAX);
+        tagW = TAG_DOT_D + TAG_GAP + textWidth(fSmall, tag);
+    }
+    const std::string app =
+        ellipsize(fLabel, appDisplayName(n.appId), W - 2 * PAD - whenW - 30 - (showTag ? tagW + 10 : 0));
     const int chipW = textWidth(fLabel, app) + 20;
     const int chipBase = midBaseline(fLabel, CHIP_Y, CHIP_H);
     g.fillSmoothRoundRect(PAD, CHIP_Y, chipW, CHIP_H, CHIP_H / 2, chipBg, C_BG);
     drawText(fLabel, PAD + 10, chipBase, app, accent, chipBg);
     drawTextRight(fSmall, W - PAD, chipBase, when, C_DIM, C_BG);
+    if (showTag) {  // iPhone đang mất kết nối thì chấm và chữ mờ đi
+        const int x = W - PAD - whenW - (whenW > 0 ? 10 : 0) - tagW;
+        const bool online = gLink.phones[n.phone].connected;
+        const uint16_t pc = kPhoneColor[n.phone];
+        const uint16_t dotColor = online ? pc : g.alphaBlend(110, pc, C_BG);
+        g.fillSmoothCircle(x + TAG_DOT_D / 2, CHIP_Y + CHIP_H / 2, TAG_DOT_D / 2, dotColor, C_BG);
+        drawText(fSmall, x + TAG_DOT_D + TAG_GAP, chipBase, tag, online ? C_DIM : C_MUTED, C_BG);
+    }
 
     int y = CHIP_Y + CHIP_H + 24;
     if (n.title[0]) {
@@ -582,13 +642,21 @@ void drawBluetoothIcon(int cx, int cy, uint16_t color) {
 
 void drawWaitingScreen() {
     gfx().fillRect(0, HDR_H + 1, W, H - HDR_H - 1, C_BG);
-    switch (gState) {
-        case ancs::LinkState::Ready:
+    switch (gLink.state) {
+        case ancs::LinkState::Ready: {
             drawBluetoothIcon(W / 2, 84, C_GREEN);
             drawTextCenter(fTitle, 146, "Ready", C_TEXT, C_BG);
-            drawTextCenter(fBody, 174, "New iPhone notifications", C_DIM, C_BG);
+            char line[40];
+            if (gLink.ready >= 2) snprintf(line, sizeof line, "Notifications from %u iPhones", (unsigned)gLink.ready);
+            else strlcpy(line, "New iPhone notifications", sizeof line);
+            drawTextCenter(fBody, 174, line, C_DIM, C_BG);
             drawTextCenter(fBody, 197, "will show up here", C_DIM, C_BG);
+            if (gLink.advertising) {  // còn chỗ: iPhone khác vẫn thấy board
+                drawTextCenter(fSmall, 224, ellipsize(fSmall, "Add another iPhone: Settings › Bluetooth", W - 2 * PAD),
+                               C_MUTED, C_BG);
+            }
             break;
+        }
         case ancs::LinkState::Connected:
             drawBluetoothIcon(W / 2, 84, C_BLUE);
             drawTextCenter(fTitle, 146, "Connecting…", C_TEXT, C_BG);
@@ -607,7 +675,8 @@ void drawWaitingScreen() {
 void drawPassKeyScreen() {
     TFT_eSPI& g = gfx();
     g.fillRect(0, HDR_H + 1, W, H - HDR_H - 1, C_BG);
-    drawTextCenter(fBody, 66, "Enter this code on your iPhone", C_TEXT, C_BG);
+    drawTextCenter(fBody, 66, gLink.ready > 0 ? "Enter this code on the new iPhone" : "Enter this code on your iPhone",
+                   C_TEXT, C_BG);
 
     const int boxX = 40, boxY = 84, boxW = 240, boxH = 72;
     g.fillSmoothRoundRect(boxX, boxY, boxW, boxH, 14, C_SEP, C_BG);
@@ -725,21 +794,23 @@ void onButton(ButtonId id) {
             break;
     }
     if (gCount == 0) return;
+    // Hành động gửi tới đúng iPhone đã gửi tin; iPhone đó đang mất kết nối thì chỉ xoá trên màn hình
+    const uint8_t phone = gHistory[gView].phone;
     const uint32_t uid = gHistory[gView].uid;
     const bool canClear = gHistory[gView].flags & NOTIF_FLAG_NEGATIVE_ACTION;
     switch (id) {
         case BTN_OLDER: showIndex(gView + 1); break;
         case BTN_NEWER: showIndex(gView - 1); break;
         case BTN_DISMISS:
-            if (canClear) ancs::performAction(uid, false);  // xoá luôn trên iPhone
+            if (canClear) ancs::performAction(phone, uid, false);  // xoá luôn trên iPhone
             removeAt(gView);
             break;
         case BTN_ANSWER:
-            ancs::performAction(uid, true);
+            ancs::performAction(phone, uid, true);
             removeAt(gView);
             break;
         case BTN_DECLINE:
-            ancs::performAction(uid, false);
+            ancs::performAction(phone, uid, false);
             removeAt(gView);
             break;
         default: break;
@@ -918,12 +989,16 @@ bool isTouched() {
     return gHasTouch && touch::read(x, y);
 }
 
-void setLinkState(ancs::LinkState state) {
-    gState = state;
-    if (state != ancs::LinkState::Connected) gShowPassKey = false;
-    led::setLink(state);
+void setLinkStatus(const ancs::LinkStatus& st) {
+    const bool changed = st.state != gLink.state || st.ready != gLink.ready || st.connected != gLink.connected;
+    const uint8_t prevReady = gLink.ready;
+    gLink = st;
+    for (auto& p : gLink.phones) sanitize(p.label, sizeof p.label);  // bỏ emoji/ký tự font không có
+    if (st.connected == 0) gShowPassKey = false;  // KHÔNG ẩn mã PIN chỉ vì máy khác đổi trạng thái
+    led::setLink(st.state);
+    if (st.ready > prevReady && prevReady > 0) led::phoneJoined();  // thêm được một iPhone nữa
     led::setPairing(gShowPassKey);
-    wake();
+    if (changed) wake();
     render();
 }
 
@@ -935,7 +1010,13 @@ void showPassKey(uint32_t key) {
     render();
 }
 
-bool addNotification(const Notification& in) {
+void hidePassKey() {
+    gShowPassKey = false;
+    led::setPairing(false);
+    render();
+}
+
+bool addNotification(const Notification& in, bool isNew) {
     Notification n = in;
     const bool hadMessage = n.message[0] != '\0';
     sanitize(n.title, sizeof n.title);
@@ -943,13 +1024,17 @@ bool addNotification(const Notification& in) {
     sanitize(n.message, sizeof n.message);
     if (hadMessage && !n.message[0]) strlcpy(n.message, "(emoji)", sizeof n.message);
 
+    // Mỗi iPhone tự đánh số uid: thông báo được nhận diện bằng cặp (phone, uid)
     for (int i = 0; i < gCount; i++) {
-        if (gHistory[i].uid == n.uid) {  // thông báo được cập nhật nội dung
+        if (gHistory[i].phone != n.phone || gHistory[i].uid != n.uid) continue;
+        if (!isNew) {  // thông báo được cập nhật nội dung
             gHistory[i] = n;
             updateLed();
             if (i == gView) render();
             return false;
         }
+        removeAt(i);  // "Added" với uid đã có (iPhone dùng lại uid, vd. sau khi khởi động lại): coi như tin mới
+        break;
     }
     int keep = gCount < HISTORY_MAX ? gCount : HISTORY_MAX - 1;
     memmove(&gHistory[1], &gHistory[0], keep * sizeof(Notification));
@@ -966,13 +1051,20 @@ bool addNotification(const Notification& in) {
     return true;
 }
 
-void removeNotification(uint32_t uid) {
+void removeNotification(uint8_t phone, uint32_t uid) {
     for (int i = 0; i < gCount; i++) {
-        if (gHistory[i].uid != uid) continue;
+        if (gHistory[i].phone != phone || gHistory[i].uid != uid) continue;
         removeAt(i);
         render();
         return;
     }
+}
+
+void forgetPhone(uint8_t phone) {
+    for (int i = gCount - 1; i >= 0; i--) {
+        if (phone == NO_PHONE || gHistory[i].phone == phone) removeAt(i);
+    }
+    render();
 }
 
 void loop() {

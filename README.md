@@ -36,6 +36,24 @@ Giao diện trên màn hình bằng tiếng Anh; tài liệu này ghi kèm chữ
    *Share System Notifications*.)
 5. Trạng thái chuyển thành "Connected" là xong. Lần sau cắm điện, iPhone tự kết nối lại.
 
+### Nhiều iPhone cùng lúc
+
+- Board kết nối và nhận thông báo từ **tối đa 3 iPhone cùng lúc**.
+- **Thêm iPhone**: trên iPhone mới vào **Cài đặt → Bluetooth → ESP32 Noti** rồi nhập mã hiện trên màn hình
+  (*"Enter this code on the new iPhone"*). Khi còn dưới 3 iPhone kết nối, board vẫn hiện trong danh sách Bluetooth
+  (màn hình chờ ghi *"Add another iPhone: Settings › Bluetooth"*); đủ 3 máy thì phải tắt Bluetooth một máy mới thêm
+  được máy khác. Ghép đôi **từng iPhone một**: hai iPhone mới ghép cùng lúc thì máy ghép trước có thể báo lỗi, chỉ cần
+  ghép lại.
+- Từ 2 iPhone trở lên, mỗi thông báo có thêm **chấm màu + tên ngắn** của iPhone đã gửi, lấy từ tên máy
+  ("iPhone của Cường" / "Cường's iPhone" thành "Cường"); chấm mờ đi khi iPhone đó đang mất kết nối. Thanh trạng thái
+  hiện "2 iPhones" (thêm "+1" khi còn máy khác đang kết nối).
+- **Dismiss**, **Answer**, **Decline** tác động lên đúng iPhone đã gửi thông báo. iPhone đó đang mất kết nối thì
+  thông báo chỉ bị xoá khỏi màn hình.
+- Board nhớ 3 iPhone. Ghép đôi iPhone thứ 4 thì board quên iPhone cũ nhất **đang không kết nối** (thông báo của máy
+  đó cũng biến khỏi màn hình, màu của nó chuyển cho máy mới). Muốn dùng lại máy bị quên: trên iPhone đó chọn (i) →
+  *Quên thiết bị này* rồi ghép đôi lại.
+- Đèn RGB sáng xanh lá 1 giây cả khi có thêm một iPhone sẵn sàng.
+
 ## Sử dụng
 
 Cảm ứng:
@@ -58,7 +76,7 @@ Nút **BOOT**: bấm để xem tin cũ hơn (hết thì quay lại tin mới nh�
 | Đèn | Ý nghĩa |
 |---|---|
 | Xanh dương "thở" chậm | Đang chờ iPhone / mất kết nối |
-| Xanh lá sáng 1 giây | Vừa kết nối xong |
+| Xanh lá sáng 1 giây | Vừa kết nối xong (hoặc vừa thêm được một iPhone nữa) |
 | Vàng nhấp nháy | Đang ghép đôi (nhập mã PIN) |
 | Nháy 3 lần theo màu loại tin | Có thông báo mới (màu giống nhãn tên app) |
 | Chớp nhẹ mỗi 4 giây | Còn tin chưa xem — chạm màn hoặc bấm BOOT là tắt |
@@ -128,7 +146,8 @@ không"*. Nội dung thông báo đọc bằng **giọng tiếng Việt**; câu 
 
 ## Cấu trúc mã nguồn
 
-- `src/ancs_client.cpp` — Bluetooth: quảng bá, ghép đôi, đọc ANCS, ghép các mảnh dữ liệu, lấy giờ từ iPhone.
+- `src/ancs_client.cpp` — Bluetooth: quảng bá, ghép đôi, đọc ANCS từ tối đa 3 iPhone (mỗi kết nối một task), ghép các
+  mảnh dữ liệu, lấy giờ và tên máy từ iPhone, bảng 3 iPhone đã ghép đôi (màu, tên ngắn).
 - `src/ui.cpp` — vẽ giao diện vào sprite toàn màn hình (không nhấp nháy), xuống dòng, lịch sử, nút bấm, đèn nền.
 - `src/vlw_font.cpp` — vẽ chữ khử răng cưa từ font VLW; ký tự font không có (emoji) được bỏ qua.
 - `src/touch.cpp` — đọc cảm ứng FT6336 (I2C) hoặc XPT2046 (SPI), đổi toạ độ sang màn ngang.

@@ -6,7 +6,7 @@
 #include "ui.h"
 
 static const char* kDeviceName = "ESP32 Noti";
-static ancs::Event gEvent;  // khá lớn (~700 byte) nên để static
+static ancs::Event gEvent;  // khá lớn (~800 byte) nên để static
 static String gSerialLine;
 
 void setup() {
@@ -22,21 +22,26 @@ void setup() {
     }
 
     ancs::begin(kDeviceName);
-    if (forget) ancs::forgetBonds();
+    if (forget) ancs::forgetBonds();  // xoá được cả khi đang quảng bá
     speech::begin();
 }
 
 void loop() {
     while (ancs::nextEvent(gEvent)) {
         switch (gEvent.type) {
-            case ancs::EventType::State: ui::setLinkState(gEvent.state); break;
+            case ancs::EventType::Link: ui::setLinkStatus(gEvent.link); break;
             case ancs::EventType::PassKey: ui::showPassKey(gEvent.passKey); break;
+            case ancs::EventType::PassKeyDone: ui::hidePassKey(); break;
             case ancs::EventType::Added:
-                if (ui::addNotification(gEvent.notif)) speech::announce(gEvent.notif);
+                if (ui::addNotification(gEvent.notif, gEvent.isNew)) speech::announce(gEvent.notif);
                 break;
             case ancs::EventType::Removed:
-                ui::removeNotification(gEvent.uid);
-                speech::cancel(gEvent.uid);
+                ui::removeNotification(gEvent.phone, gEvent.uid);
+                speech::cancel(gEvent.phone, gEvent.uid);
+                break;
+            case ancs::EventType::PhoneForgotten:
+                ui::forgetPhone(gEvent.phone);
+                speech::cancelPhone(gEvent.phone);
                 break;
         }
     }

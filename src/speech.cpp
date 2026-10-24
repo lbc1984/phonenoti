@@ -48,6 +48,7 @@ struct Part {
 };
 
 struct Item {
+    uint8_t phone;  // iPhone gửi tin; NO_PHONE = câu của board
     uint32_t uid;
     bool chime;  // kêu "ting" trước khi đọc
     std::vector<Part> parts;
@@ -62,6 +63,7 @@ std::atomic<Net> gNet{Net::Off};
 std::mutex gMutex;  // bảo vệ hàng đợi và thông báo đang đọc
 std::vector<Item> gQueue;
 bool gHasCurrent = false;
+uint8_t gCurrentPhone = NO_PHONE;
 uint32_t gCurrentUid = 0;
 
 Preferences gPrefs;  // "vol": âm lượng, "later": đã bấm "Later" ở màn cài WiFi
@@ -204,6 +206,7 @@ bool takeNext(Item& out) {
     out = std::move(gQueue.front());
     gQueue.erase(gQueue.begin());
     gHasCurrent = true;
+    gCurrentPhone = out.phone;
     gCurrentUid = out.uid;
     gAbort = false;
     return true;
@@ -398,7 +401,8 @@ void task(void*) {
                           now == Net::Setup ? SETUP_AP : "");
             if (now == Net::Online && savedNew) {
                 savedNew = false;
-                if (gVolume > 0) enqueue({SYSTEM_UID, false, {{true, "WiFi connected"}}});  // báo cài xong, thử loa
+                // báo cài xong, thử loa
+                if (gVolume > 0) enqueue({NO_PHONE, SYSTEM_UID, false, {{true, "WiFi connected"}}});
             }
             if (last == Net::Setup && !wifiSaved()) gPrefs.putBool("later", true);  // thoát trang mà chưa cài
             last = now;
@@ -439,7 +443,7 @@ bool available() { return gAvailable; }
 
 void announce(const Notification& n) {
     if (!gAvailable || gVolume == 0 || (n.flags & NOTIF_FLAG_SILENT)) return;
-    Item item{n.uid, true, compose(n)};
+    Item item{n.phone, n.uid, true, compose(n)};
     for (const Part& p : item.parts) Serial.printf("[TTS] Sẽ đọc (%s): %s\n", p.english ? "en" : "vi", p.text.c_str());
     enqueue(std::move(item));
 }
@@ -449,14 +453,24 @@ void say(const char* text) {
     const std::string s = truncateChars(clean(text), MAX_CHARS);
     // Câu thử toàn chữ không dấu thì đọc giọng Anh, có dấu thì giọng Việt
     const bool english = std::all_of(s.begin(), s.end(), [](char c) { return (unsigned char)c < 0x80; });
-    enqueue({SYSTEM_UID, true, {{english, s}}});
+    enqueue({NO_PHONE, SYSTEM_UID, true, {{english, s}}});
 }
 
-void cancel(uint32_t uid) {
+void cancel(uint8_t phone, uint32_t uid) {
     std::lock_guard<std::mutex> lock(gMutex);
-    gQueue.erase(std::remove_if(gQueue.begin(), gQueue.end(), [uid](const Item& i) { return i.uid == uid; }),
+    gQueue.erase(std::remove_if(gQueue.begin(), gQueue.end(),
+                                [phone, uid](const Item& i) { return i.phone == phone && i.uid == uid; }),
                  gQueue.end());
-    if (gHasCurrent && gCurrentUid == uid) gAbort = true;
+    if (gHasCurrent && gCurrentPhone == phone && gCurrentUid == uid) gAbort = true;
+}
+
+void cancelPhone(uint8_t phone) {
+    // NO_PHONE: mọi câu đọc thông báo; câu của board (phone = NO_PHONE) giữ nguyên
+    auto match = [phone](uint8_t p) { return phone == NO_PHONE ? p != NO_PHONE : p == phone; };
+    std::lock_guard<std::mutex> lock(gMutex);
+    gQueue.erase(std::remove_if(gQueue.begin(), gQueue.end(), [&match](const Item& i) { return match(i.phone); }),
+                 gQueue.end());
+    if (gHasCurrent && match(gCurrentPhone)) gAbort = true;
 }
 
 void setVolume(uint8_t level) {
@@ -491,7 +505,8 @@ void begin() {}
 bool available() { return false; }
 void announce(const Notification&) {}
 void say(const char*) {}
-void cancel(uint32_t) {}
+void cancel(uint8_t, uint32_t) {}
+void cancelPhone(uint8_t) {}
 void setVolume(uint8_t) {}
 uint8_t volume() { return 0; }
 bool muted() { return false; }

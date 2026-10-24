@@ -21,7 +21,8 @@ bool available();  // có loa để phát
 
 void announce(const Notification& n);  // bỏ qua nếu đang tắt tiếng hoặc tin im lặng
 void say(const char* text);            // đọc thử một câu (gõ vào Serial Monitor)
-void cancel(uint32_t uid);             // thông báo đã bị xoá -> thôi đọc
+void cancel(uint8_t phone, uint32_t uid);  // thông báo đã bị xoá -> thôi đọc
+void cancelPhone(uint8_t phone);           // NO_PHONE = mọi thông báo (không đụng câu của board)
 
 // Âm lượng 0..MAX_VOLUME, 0 = tắt tiếng (dừng đọc ngay). Nhớ cả sau khi rút điện; mặc định to nhất.
 // Gọi từ loop() (ghi thanh ghi codec qua I2C chung với cảm ứng).

@@ -1,6 +1,9 @@
 #pragma once
 #include <stdint.h>
 
+constexpr uint8_t MAX_PHONES = 3;   // số iPhone tối đa cùng lúc (= số kết nối = số ghép đôi)
+constexpr uint8_t NO_PHONE = 0xFF;  // không gắn với iPhone nào
+
 // ANCS CategoryID
 enum NotifCategory : uint8_t {
     CAT_OTHER = 0,
@@ -31,6 +34,7 @@ struct Notification {
     uint32_t uid;
     uint8_t category;
     uint8_t flags;
+    uint8_t phone;  // iPhone gửi tin (0..MAX_PHONES-1), ổn định qua các lần kết nối lại
     char appId[64];
     char title[96];
     char subtitle[96];
