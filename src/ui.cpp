@@ -363,8 +363,10 @@ int readyPhone() {
     return -1;
 }
 
-// Chữ và màu chấm trạng thái trên thanh trên cùng
-const char* linkLabel(uint16_t& dot, char* buf, size_t cap) {
+// Chữ và màu chấm trạng thái trên thanh trên cùng. more = " +N" khi còn máy khác đang nối, trả riêng để
+// drawHeader rút gọn phần tên chứ không cắt mất nó
+const char* linkLabel(uint16_t& dot, char* buf, size_t cap, char* more, size_t moreCap) {
+    more[0] = '\0';
     if (gShowPassKey) {
         dot = C_YELLOW;
         return "Pairing";
@@ -381,11 +383,8 @@ const char* linkLabel(uint16_t& dot, char* buf, size_t cap) {
     if (gLink.ready >= 2) snprintf(buf, cap, "%u iPhones", (unsigned)gLink.ready);
     else if (gLink.known >= 2) strlcpy(buf, phoneLabel(readyPhone()).c_str(), cap);  // 1 trong nhiều máy: tên máy đó
     else strlcpy(buf, "Connected", cap);
-    if (gLink.connected > gLink.ready) {  // còn máy khác đang nối: "2 iPhones +1"
-        char more[8];
-        snprintf(more, sizeof more, " +%u", (unsigned)(gLink.connected - gLink.ready));
-        strlcat(buf, more, cap);
-    }
+    if (gLink.connected > gLink.ready)  // còn máy khác đang nối: "2 iPhones +1"
+        snprintf(more, moreCap, " +%u", (unsigned)(gLink.connected - gLink.ready));
     return buf;
 }
 
@@ -442,8 +441,8 @@ void drawHeader() {
     g.drawFastHLine(0, HDR_H, W, C_SEP);
 
     uint16_t dot;
-    char buf[48];
-    const char* label = linkLabel(dot, buf, sizeof buf);
+    char buf[48], more[8];
+    const char* label = linkLabel(dot, buf, sizeof buf, more, sizeof more);
     const int base = midBaseline(fSmall, 0, HDR_H);
     g.fillSmoothCircle(14, HDR_H / 2, 4, dot, C_HDR);
 
@@ -479,8 +478,9 @@ void drawHeader() {
         drawWifiIcon(right - 12, HDR_H / 2 + 7);
         right -= 24;
     }
-    // Chữ trạng thái vẽ sau cùng, rút gọn "…" nếu không đủ chỗ trước các biểu tượng bên phải
-    drawText(fSmall, 24, base, ellipsize(fSmall, label, right - 6 - 24), C_TEXT, C_HDR);
+    // Chữ trạng thái vẽ sau cùng, rút gọn "…" nếu không đủ chỗ trước các biểu tượng bên phải (rút gọn tên, giữ " +N")
+    drawText(fSmall, 24, base, ellipsize(fSmall, label, right - 6 - 24 - textWidth(fSmall, more)) + more, C_TEXT,
+             C_HDR);
 }
 
 // Nút chữ bo tròn trên thanh dưới đáy; đang nhấn thì dùng màu pressed.
@@ -715,6 +715,9 @@ void drawWifiSetupScreen() {
     const int bw = 140;
     drawButton((W - bw) / 2, bw, BTN_WIFI_LATER, "Later", C_SEP, C_MUTED, C_TEXT);
 }
+
+// render() đang vẽ thông báo (không phải màn mã PIN, cài WiFi hay màn chờ): chỉ khi đó mới được nháy viền
+bool notificationShown() { return gCount > 0 && !gShowPassKey && speech::net() != speech::Net::Setup; }
 
 void render() {
     gButtons.clear();
@@ -990,7 +993,9 @@ bool isTouched() {
 }
 
 void setLinkStatus(const ancs::LinkStatus& st) {
-    const bool changed = st.state != gLink.state || st.ready != gLink.ready || st.connected != gLink.connected;
+    // Bật sáng khi trạng thái chung hoặc số iPhone sẵn sàng đổi; chỉ số kết nối đổi (vd. iPhone tắt chia sẻ thông
+    // báo cứ 30 s bị ngắt rồi nối lại) thì không, để màn hình vẫn tối dần được. render() bên dưới vẫn vẽ lại "+N".
+    const bool changed = st.state != gLink.state || st.ready != gLink.ready;
     const uint8_t prevReady = gLink.ready;
     gLink = st;
     for (auto& p : gLink.phones) sanitize(p.label, sizeof p.label);  // bỏ emoji/ký tự font không có
@@ -1072,7 +1077,7 @@ void loop() {
     const uint32_t now = millis();  // lấy sau pollInput: wake() có thể vừa cập nhật gLastActivity
 
     if (gFlashLeft > 0 && (int32_t)(now - gFlashNext) >= 0) {
-        if (gCount > 0) {
+        if (notificationShown()) {  // màn mã PIN của iPhone đang ghép đôi / màn cài WiFi: không vẽ đè
             if (gFlashLeft % 2 == 0) {
                 const uint16_t c = categoryColor(gHistory[gView].category);
                 gfx().drawRect(0, HDR_H + 1, W, BAR_Y - HDR_H - 2, c);

@@ -65,6 +65,8 @@ constexpr uint32_t kSlotStack = 6144;
 constexpr UBaseType_t kSlotPrio = 3;  // trên task đọc thông báo (2): giảm rủi ro ble_gattc gửi rồi mới chèn thủ tục
 constexpr uint32_t kSecureTimeoutMs = 60000, kNoAncsWaitMs = 30000, kOpTimeoutMs = 35000;  // 35 s > 30 s ATT
 constexpr uint32_t kDataTimeoutMs = 3000, kIdleMs = 2000, kSecurePollMs = 250;
+constexpr int kDiscoverTries = 3;           // dò dịch vụ/characteristic ANCS tối đa ngần này lần
+constexpr uint32_t kDiscoverRetryMs = 500;  // nghỉ giữa các lần dò lại
 constexpr bool kRequestConnParams = true;
 constexpr uint16_t kItvlMin = 24, kItvlMax = 40, kLatency = 0, kSupTimeout = 500;  // 30-50 ms, 5 s
 
@@ -618,6 +620,7 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     void onConnect(NimBLEServer* server, NimBLEConnInfo& info) override {
         const uint16_t h = info.getConnHandle();
         const uint32_t now = millis();
+        const bool enc = info.isEncrypted();  // iPhone đã ghép đôi có thể mã hoá xong trước CONNECT
         Slot* s = nullptr;
         portENTER_CRITICAL(&gMux);
         for (Slot& t : gSlots) {
@@ -640,7 +643,11 @@ class ServerCallbacks : public NimBLEServerCallbacks {
             s->gen = gGenCounter;
             s->stage = Stage::Securing;
             s->phone = NO_PHONE;
-            s->encrypted = s->pairing = false;
+            // encrypted chỉ do onAuthenticationComplete/markSecured đặt (secure() dựa vào đó, xem secured())
+            s->encrypted = false;
+            // CONNECT của slave chờ đọc phiên bản/tính năng từ xa nên PASSKEY_ACTION có thể tới trước: mã PIN đang hiện
+            // thì kết nối mới chưa mã hoá cũng là ứng viên, để máy khác rớt/mã hoá lại không ẩn mất mã đang nhập
+            s->pairing = gPkActive && !enc;
             s->encStatus = 0;
             s->connectedAt = now;
             s->nsVal = s->dsVal = 0;
@@ -856,7 +863,7 @@ void registryPersist() {  // người gọi giữ gRegMutex
 // Gọi trong begin() sau NimBLEDevice::init (khoá ghép đôi đã nạp), trước khi có task nào khác.
 void registryLoad() {
     PhoneRec tmp[MAX_PHONES] = {};
-    if (gPrefs.getBytesLength("phones") == sizeof tmp) gPrefs.getBytes("phones", tmp, sizeof tmp);
+    if (gPrefs.isKey("phones") && gPrefs.getBytesLength("phones") == sizeof tmp) gPrefs.getBytes("phones", tmp, sizeof tmp);
     ble_addr_t bonded[MAX_PHONES];
     int nb = 0;
     const bool bondedOk = ble_store_util_bonded_peers(bonded, &nb, MAX_PHONES) == 0;
@@ -1046,6 +1053,17 @@ bool transientSecError(int st) {
     }
 }
 
+// Đã mã hoá VÀ danh tính iPhone đã chốt. Ghép đôi mới: controller báo mã hoá xong là sec_state.encrypted = 1 ngay
+// (ble_sm.c:1267) trong khi iPhone còn đang gửi IRK + địa chỉ định danh; tới ble_sm_persist_keys (ble_sm.c:548)
+// peer_id_addr mới đổi từ địa chỉ ngẫu nhiên (RPA) sang địa chỉ định danh và khoá mới được lưu (kể cả bỏ máy cũ khi
+// bộ nhớ đầy), rồi mới có ENC_CHANGE. Nhận sớm thì bảng iPhone ghi theo RPA, lần kết nối sau iPhone bị "quên".
+// Khôi phục khoá cũ (ENC_RESTORE) đặt bonded = 1 cùng lúc với encrypted, địa chỉ đã phân giải sẵn.
+// encOk: slot đã nhận ENC_CHANGE thành công (onAuthenticationComplete chạy SAU persist_keys).
+bool secured(const ble_gap_conn_desc& d, bool encOk) {
+    if (!d.sec_state.encrypted) return false;
+    return encOk || (d.sec_state.bonded && NimBLEDevice::isBonded(NimBLEAddress(d.peer_id_addr)));
+}
+
 // Chờ kết nối được mã hoá (ghép đôi mới hoặc khôi phục khoá cũ).
 bool secure(Slot& s, uint16_t h, uint32_t gen) {
     ble_gap_conn_desc d;
@@ -1053,7 +1071,7 @@ bool secure(Slot& s, uint16_t h, uint32_t gen) {
     // (CONNECT của slave chờ đọc phiên bản/tính năng từ xa) nên encStatus/encrypted của slot có thể không bao giờ
     // được ghi cho lần mã hoá đó.
     if (ble_gap_conn_find(h, &d) != 0) return false;
-    if (d.sec_state.encrypted) {
+    if (secured(d, false)) {
         markSecured(s, gen);
         return true;
     }
@@ -1063,16 +1081,19 @@ bool secure(Slot& s, uint16_t h, uint32_t gen) {
     for (;;) {
         const uint32_t used = millis() - t0;
         if (used >= kSecureTimeoutMs) break;
-        // Mỗi 250 ms xem lại sec_state, không chỉ trông vào ENC_CHANGE của slot
+        // Mỗi 250 ms xem lại sec_state (khôi phục khoá mà ENC_CHANGE không tới slot), không chỉ trông vào ENC_CHANGE;
+        // riêng sec_state.encrypted thì chưa đủ (đang trao khoá, xem secured())
         waitBits(s, h, gen, BIT_ENC, std::min<uint32_t>(kSecureTimeoutMs - used, kSecurePollMs));
         if (!alive(s, h, gen) || ble_gap_conn_find(h, &d) != 0) return false;
-        if (d.sec_state.encrypted) {
+        bool enc;
+        portENTER_CRITICAL(&gMux);
+        enc = s.encrypted;  // trước khi secure() trả về, chỉ onAuthenticationComplete đặt true
+        st = s.encStatus;
+        portEXIT_CRITICAL(&gMux);
+        if (secured(d, enc && st == 0)) {
             markSecured(s, gen);
             return true;
         }
-        portENTER_CRITICAL(&gMux);
-        st = s.encStatus;
-        portEXIT_CRITICAL(&gMux);
         if (st != 0) break;  // ENC_CHANGE báo lỗi
     }
     // Xoá khoá chỉ khi lỗi khoá thật với máy đã ghép đôi (vd. iPhone đã "Quên thiết bị này" rồi ghép với khoá khác).
@@ -1181,6 +1202,13 @@ void doActions(Slot& s, uint16_t h, uint32_t gen) {
     }
 }
 
+// Stack còn trống ít nhất của host task NimBLE (byte), để kiểm tra CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE
+// (onStoreStatus -> unpairPeer chạy lồng trong lúc lưu khoá là đường sâu nhất)
+unsigned hostStackLeft() {
+    TaskHandle_t t = xTaskGetHandle("nimble_host");
+    return t ? (unsigned)uxTaskGetStackHighWaterMark(t) : 0;
+}
+
 // Một phiên với một iPhone; dừng ở lỗi đầu tiên (finishSession dọn dẹp).
 void runSession(Slot& s, uint16_t h, uint32_t gen) {
     xQueueReset(s.pending);
@@ -1193,7 +1221,7 @@ void runSession(Slot& s, uint16_t h, uint32_t gen) {
     if (!secure(s, h, gen)) return;
     ensureAdvertising();  // ghép đôi máy mới (thêm IRK) làm NimBLE ngầm dừng quảng bá
 
-    // Danh tính: peer_id_addr đã là địa chỉ định danh (type 0/1) sau khi mã hoá
+    // Danh tính: peer_id_addr đã là địa chỉ định danh (type 0/1) sau ENC_CHANGE (trao khoá xong), xem secured()
     ble_gap_conn_desc d;
     if (ble_gap_conn_find(h, &d) != 0) return;
     const uint8_t phone = registryAcquire(s, gen, d.peer_id_addr);
@@ -1208,41 +1236,57 @@ void runSession(Slot& s, uint16_t h, uint32_t gen) {
     if (readByUuid(s, h, gen, kCtsCurrentTime, buf, n) && n >= 7) syncClock(buf, n);
     if (readByUuid(s, h, gen, kGapDeviceName, buf, n) && n) registrySetLabel(phone, d.peer_id_addr, buf, n);
 
-    // Dịch vụ ANCS
-    rc = runOp(s, h, gen, [&](void* a) { return ble_gattc_disc_svc_by_uuid(h, kAncsService.getBase(), onSvc, a); });
-    bool found;
-    uint16_t svcStart, svcEnd;
-    portENTER_CRITICAL(&gMux);
-    found = rc == 0 && s.opFound;
-    svcStart = s.opH1;
-    svcEnd = s.opH2;
-    portEXIT_CRITICAL(&gMux);
+    // Dịch vụ ANCS + characteristic. Ngay sau khi mã hoá, iOS có thể đang đổi bảng thuộc tính (ANCS chỉ hiện khi
+    // đã mã hoá) nên lần dò đầu đôi khi nhận phản hồi lệch (BLE_HS_EBADDATA): dò lại vài lần trước khi bỏ cuộc.
+    bool found = false;
+    uint16_t svcStart = 0, svcEnd = 0;
+    ChrInfo chrs[kMaxChrs];
+    int nc = 0, ins = -1, icp = -1, ids = -1;
+    for (int attempt = 0; attempt < kDiscoverTries; attempt++) {
+        if (attempt > 0) {
+            Serial.printf("[ANCS%u] Dò lại dịch vụ ANCS (lần %d)\n", s.index, attempt + 1);
+            waitBits(s, h, gen, 0, kDiscoverRetryMs);
+            if (!alive(s, h, gen)) return;
+        }
+        rc = runOp(s, h, gen,
+                   [&](void* a) { return ble_gattc_disc_svc_by_uuid(h, kAncsService.getBase(), onSvc, a); });
+        portENTER_CRITICAL(&gMux);
+        found = rc == 0 && s.opFound;
+        svcStart = s.opH1;
+        svcEnd = s.opH2;
+        portEXIT_CRITICAL(&gMux);
+        if (!found) {
+            if (rc != 0 && alive(s, h, gen)) {
+                Serial.printf("[ANCS%u] Tìm dịch vụ ANCS lỗi rc=0x%X\n", s.index, (unsigned)rc);
+                continue;
+            }
+            break;  // không có dịch vụ ANCS (chưa cho phép) hoặc mất kết nối
+        }
+
+        // Characteristic (trả về theo thứ tự handle tăng dần)
+        rc = runOp(s, h, gen, [&](void* a) { return ble_gattc_disc_all_chrs(h, svcStart, svcEnd, onChr, a); });
+        portENTER_CRITICAL(&gMux);
+        nc = s.nChrs;
+        memcpy(chrs, s.chrs, sizeof chrs);
+        portEXIT_CRITICAL(&gMux);
+        ins = icp = ids = -1;
+        for (int i = 0; i < nc; i++) {
+            if (chrs[i].kind == CHR_NS) ins = i;
+            else if (chrs[i].kind == CHR_CP) icp = i;
+            else if (chrs[i].kind == CHR_DS) ids = i;
+        }
+        if (rc == 0 && ins >= 0 && icp >= 0 && ids >= 0) break;
+        Serial.printf("[ANCS%u] Thiếu characteristic (rc=0x%X)\n", s.index, (unsigned)rc);
+        found = false;
+        if (!alive(s, h, gen)) return;
+    }
     if (!found) {
         if (!alive(s, h, gen)) return;
-        if (rc != 0) Serial.printf("[ANCS%u] Tìm dịch vụ ANCS lỗi rc=0x%X\n", s.index, (unsigned)rc);
+        if (nc > 0 || rc != 0) return;  // dò lỗi nhiều lần: finishSession ngắt, iPhone tự kết nối lại
         Serial.printf("[ANCS%u] Không thấy dịch vụ ANCS. Hãy bật 'Chia sẻ thông báo hệ thống' trên iPhone.\n",
                       s.index);
         waitBits(s, h, gen, 0, kNoAncsWaitMs);
         return;  // finishSession ngắt kết nối để iPhone hỏi quyền lần nữa
-    }
-
-    // Characteristic (trả về theo thứ tự handle tăng dần)
-    rc = runOp(s, h, gen, [&](void* a) { return ble_gattc_disc_all_chrs(h, svcStart, svcEnd, onChr, a); });
-    ChrInfo chrs[kMaxChrs];
-    int nc;
-    portENTER_CRITICAL(&gMux);
-    nc = s.nChrs;
-    memcpy(chrs, s.chrs, sizeof chrs);
-    portEXIT_CRITICAL(&gMux);
-    int ins = -1, icp = -1, ids = -1;
-    for (int i = 0; i < nc; i++) {
-        if (chrs[i].kind == CHR_NS) ins = i;
-        else if (chrs[i].kind == CHR_CP) icp = i;
-        else if (chrs[i].kind == CHR_DS) ids = i;
-    }
-    if (rc != 0 || ins < 0 || icp < 0 || ids < 0) {
-        Serial.printf("[ANCS%u] Thiếu characteristic (rc=0x%X)\n", s.index, (unsigned)rc);
-        return;
     }
     auto endOf = [&](int i) -> uint16_t { return i + 1 < nc ? chrs[i + 1].def - 1 : svcEnd; };
 
@@ -1283,8 +1327,8 @@ void runSession(Slot& s, uint16_t h, uint32_t gen) {
         withConn(s, h, gen, [&] { gServer->updateConnParams(h, kItvlMin, kItvlMax, kLatency, kSupTimeout); });
     }
     ensureAdvertising();
-    Serial.printf("[ANCS%u] Sẵn sàng (iPhone %d), stack còn %u\n", s.index, phone + 1,
-                  (unsigned)uxTaskGetStackHighWaterMark(nullptr));
+    Serial.printf("[ANCS%u] Sẵn sàng (iPhone %d), stack còn %u, nimble_host còn %u\n", s.index, phone + 1,
+                  (unsigned)uxTaskGetStackHighWaterMark(nullptr), hostStackLeft());
 
     while (alive(s, h, gen)) {
         const EventBits_t b = waitBits(s, h, gen, BIT_WORK, kIdleMs);
@@ -1323,7 +1367,8 @@ void finishSession(Slot& s, uint16_t h, uint32_t gen) {
     s.running = false;
     portEXIT_CRITICAL(&gMux);
     gLinkDirty = true;
-    Serial.printf("[ANCS%u] Hết phiên, stack còn %u byte\n", s.index, (unsigned)uxTaskGetStackHighWaterMark(nullptr));
+    Serial.printf("[ANCS%u] Hết phiên, stack còn %u byte, nimble_host còn %u\n", s.index,
+                  (unsigned)uxTaskGetStackHighWaterMark(nullptr), hostStackLeft());
 }
 
 void slotTask(void* arg) {
@@ -1464,7 +1509,9 @@ bool performAction(uint8_t phone, uint32_t uid, bool positive) {
     uint32_t gen = 0;
     portENTER_CRITICAL(&gMux);
     for (Slot& s : gSlots) {
-        if (s.connHandle == NONE || s.stage != Stage::Ready || s.phone != phone) continue;
+        // Không cần Ready: s.phone chỉ có sau khi biết là iPhone nào (registryAcquire); lệnh chờ trong hàng đợi, tới
+        // Ready mới gửi (runSession xoá hàng đợi trước secure(), ActionReq.gen bỏ lệnh của kết nối trước)
+        if (s.connHandle == NONE || s.phone != phone) continue;
         if (!best || s.gen > gen) {
             best = &s;
             gen = s.gen;
